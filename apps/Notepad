@@ -1,0 +1,342 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// AmiDesk - Notepad (editor de texto con guardar/cargar).
+//   Edicion multilinea dirigida por teclado IDCMP:
+//     VANILLAKEY -> texto (32..126 y 160..255: acentos/ñ), Enter (13), Backspace (8), Supr (127), Tab (9).
+//     RAWKEY     -> flechas, Inicio/Fin para mover el cursor.
+//   Menu propio de ventana (Project): New / Open... / Save... / Close. Open y Save piden el
+//   nombre con un StringRequest y leen/escriben por DOS (RAM:/df0: sincrono). Cursor (cy,cx),
+//   scroll vertical automatico, dibujo monoespaciado.
+//
+//   Lanzar: doble-clic sobre el fichero, o por su nombre desde el Shell.
+// ─────────────────────────────────────────────────────────────────────────────
+let Exec = window.Exec;
+const BLUE = 0, BLACK = 1, WHITE = 2;
+const FONTH = 11;                    // altura de fuente del texto (antes 8, demasiado pequena)
+const ROWH = 14, MX = 4, MY = 2;     // alto de fila (acorde a FONTH) y margenes del texto
+// El grosor del chrome (barra de titulo y barras de scroll) lo decide el SISTEMA segun la resolucion;
+// la app SOLO lo lee, sin saber ni ramificar por SHIRES/HIRES (equivale a leer window->BorderTop/Bottom
+// en el Amiga real). Toda la logica de resolucion vive en el sistema.
+let _sc = (typeof window !== 'undefined' && window.getSysChrome) ? window.getSysChrome() : { title: 16, bar: 16 };
+let CHT = _sc.bar;                 // grosor de barra de scroll (lo fija el sistema: 16 SHIRES, 11 HIRES)
+let TBH = _sc.title;               // alto de la barra de titulo (idem)
+const READ_MAX = 65536;              // tamano maximo de lectura en una pasada
+
+let IBase = Exec.OpenLibrary('intuition.library', 0);
+let GBase = Exec.OpenLibrary('graphics.library', 0);
+let DBase = Exec.OpenLibrary('DOS.library', 0);
+
+const WIN_W = 420, WIN_H = 220;
+
+// Barra de scroll vertical: PROPGADGET pegado al borde derecho (GFLG_RELRIGHT|RELHEIGHT)..
+const G_VSCROLL = 1, G_HSCROLL = 2;
+let vscroll = {
+    GadgetID: G_VSCROLL, GadgetType: GTYP_PROPGADGET,
+    Activation: GACT_RELVERIFY | GACT_IMMEDIATE,
+    Flags: GFLG_RELRIGHT | GFLG_RELHEIGHT,
+    LeftEdge: -16, TopEdge: CHT, Width: 15, Height: -(2 * CHT),
+    SpecialInfo: { Flags: PROP_FREEVERT | PROP_AUTOKNOB, VertPot: 0, VertBody: MAXBODY, HorizPot: 0, HorizBody: MAXBODY },
+    NextGadget: null
+};
+// Barra de scroll HORIZONTAL: PROPGADGET pegado al borde inferior (GFLG_RELBOTTOM|RELWIDTH). Permite
+// desplazar lateralmente cuando hay lineas mas anchas que la ventana (antes solo se podia con teclado).
+let hscroll = {
+    GadgetID: G_HSCROLL, GadgetType: GTYP_PROPGADGET,
+    Activation: GACT_RELVERIFY | GACT_IMMEDIATE,
+    Flags: GFLG_RELBOTTOM | GFLG_RELWIDTH,
+    LeftEdge: 1, TopEdge: -CHT, Width: -17, Height: CHT - 1,   // x: 1..W-16 (respeta borde izq y deja esquina); alto = grosor del chrome
+    SpecialInfo: { Flags: PROP_FREEHORIZ | PROP_AUTOKNOB, HorizPot: 0, HorizBody: MAXBODY, VertPot: 0, VertBody: MAXBODY },
+    NextGadget: null
+};
+vscroll.NextGadget = hscroll;   // la ventana enlaza ambas barras (FirstGadget -> vscroll -> hscroll)
+
+let win = IBase.OpenWindow({
+    Title: 'Notepad',
+    LeftEdge: 80, TopEdge: 40, Width: WIN_W, Height: WIN_H,
+    MinWidth: 180, MinHeight: 90,
+    Flags: IBase.WINDOWCLOSE | IBase.WINDOWDRAG | IBase.WINDOWDEPTH | IBase.WINDOWSIZING,
+    IDCMPFlags: IBase.IDCMP_CLOSEWINDOW | IBase.IDCMP_VANILLAKEY | IBase.IDCMP_RAWKEY | IBase.IDCMP_MENUPICK | IBase.IDCMP_NEWSIZE | IBase.IDCMP_GADGETUP | IBase.IDCMP_MOUSEMOVE | IBase.IDCMP_MOUSEBUTTONS,
+    FirstGadget: vscroll
+});
+if (!win) return;
+
+// Ajusta la geometria de las barras de scroll PROPIAS al chrome REAL de la ventana (bordes que el
+// sistema fija segun la resolucion, con el MISMO valor que usa para el gadget de redimension). Asi el
+// hscroll tiene la misma altura que el gadget de redimension y el vscroll no se sale de su hueco,
+// sin que la app conozca la resolucion. Se reaplica tras cada cambio de tamano.
+function applyChrome() {
+    if (win.BorderTop)    TBH = win.BorderTop;
+    if (win.BorderBottom) CHT = win.BorderBottom;
+    let br = win.BorderRight || 16;
+    // vscroll: entre la barra de titulo (BorderTop) y el borde inferior (BorderBottom), ancho = grosor-1.
+    vscroll.LeftEdge = -br; vscroll.Width = br - 1; vscroll.TopEdge = TBH; vscroll.Height = -(TBH + CHT);
+    // hscroll: pegado al borde inferior, MISMA altura que el gadget de redimension (BorderBottom-1),
+    // dejando la esquina inf-dcha para dicho gadget.
+    hscroll.LeftEdge = 1; hscroll.Width = -(br + 1); hscroll.TopEdge = -CHT; hscroll.Height = CHT - 1;
+}
+applyChrome();
+
+// Menu propio de la ventana. Aparece en la barra del WB mientras el Notepad esta activo
+// (modelo AmigaOS: el menu pertenece a la ventana activa). Al elegir un item, Intuition
+// entrega IDCMP_MENUPICK con Code = (menuNum<<11)|(itemNum<<5)|subNum.
+let menuStrip = [
+    { MenuName: 'Project', FirstItem: [
+        { ItemName: 'New',     Command: 'N' },
+        { ItemName: 'Open...', Command: 'O' },
+        { ItemName: 'Save...', Command: 'S' },
+        { ItemName: '---' },
+        { ItemName: 'Close',   Command: 'Q' }
+    ] }
+];
+IBase.SetMenuStrip(win, menuStrip);
+let rp = win.RPort;
+
+// --- Estado del editor ---
+let lines = [""];                 // el texto, una cadena por linea
+let cx = 0, cy = 0;               // cursor: columna, fila
+let top = 0;                      // primera linea visible (scroll vertical)
+let left = 0;                     // primera COLUMNA visible (scroll horizontal)
+let curName = "RAM:notes.txt";    // nombre por defecto para Save/Open
+
+// --- Conversiones texto<->bytes SIN bucles explicitos ---
+// --- Conversiones texto<->bytes en UTF-8 (asi se leen/escriben bien acentos, ñ y caracteres de
+// dibujo como ─; con fallback a Latin-1 byte-a-byte si no hay TextEncoder/Decoder) ---
+function textToBytes(t) {
+    if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(String(t));
+    return Uint8Array.from(String(t), c => c.charCodeAt(0) & 0xff);
+}
+function bytesToText(b, n) {
+    let sub = b.subarray(0, n);
+    if (typeof TextDecoder !== 'undefined') { try { return new TextDecoder('utf-8', { fatal: false }).decode(sub); } catch (e) { } }
+    return Array.from(sub, v => String.fromCharCode(v)).join('');
+}
+
+// --- Operaciones de edicion (sin bucles ni llamadas bloqueantes) ---
+function visRows() { return Math.max(1, Math.floor((rp.BitMap.Rows - MY - CHT) / ROWH)); }   // -CHT: hueco de la barra horizontal
+// Ancho de caracter de la fuente Topaz (monoespaciada) y columnas visibles (descontando margen y la
+// barra de scroll vertical de la derecha).
+function charW() { return (typeof window !== 'undefined' && window.Topaz) ? window.Topaz.charWidth(FONTH) : 7; }
+function visCols() { return Math.max(1, Math.floor(((rp.BitMap.BytesPerRow * 8) - MX - 16) / charW())); }
+function maxLineLen() { return lines.reduce((m, l) => Math.max(m, l.length), 0); }
+function maxLeft() { return Math.max(0, maxLineLen() - visCols()); }
+function clampCx() { if (cx > lines[cy].length) cx = lines[cy].length; if (cx < 0) cx = 0; }
+function ensureVisible() {
+    let vr = visRows();
+    if (cy < top) top = cy;
+    else if (cy >= top + vr) top = cy - vr + 1;
+    if (top < 0) top = 0;
+    // Horizontal: mantener la columna del cursor dentro de la ventana.
+    let vc = visCols();
+    if (cx < left) left = cx;
+    else if (cx >= left + vc) left = cx - vc + 1;
+    if (left < 0) left = 0;
+}
+// Tras un cambio de tamano: evita dejar lineas en blanco al fondo cuando la ventana crece
+// (no se puede desplazar mas alla del final del texto).
+function maxTop() { return Math.max(0, lines.length - visRows()); }
+function clampTop() { let mt = maxTop(); if (top > mt) top = mt; if (top < 0) top = 0; }
+function clampLeft() { let ml = maxLeft(); if (left > ml) left = ml; if (left < 0) left = 0; }
+// Conversion entre la posicion del knob (Pot 0..MAXPOT) y la linea/columna superior visible.
+function potToTop(pot) { let mt = maxTop(); return mt > 0 ? Math.max(0, Math.min(mt, Math.round((pot || 0) / MAXPOT * mt))) : 0; }
+function potToLeft(pot) { let ml = maxLeft(); return ml > 0 ? Math.max(0, Math.min(ml, Math.round((pot || 0) / MAXPOT * ml))) : 0; }
+// Refleja el estado del documento en ambas barras: Body = fraccion visible (tamano del knob),
+// Pot = posicion del scroll. Se llama tras cada redibujado.
+function updateScroll() {
+    let vr = visRows(), total = Math.max(1, lines.length);
+    let vbody = Math.min(MAXBODY, Math.round(vr / total * MAXBODY));
+    let mt = maxTop();
+    let vpot = mt > 0 ? Math.round(top / mt * MAXPOT) : 0;
+    IBase.ModifyProp(vscroll, win, null, PROP_FREEVERT, 0, vpot, 0, vbody);
+    let vc = visCols(), maxLen = Math.max(1, maxLineLen());
+    let hbody = Math.min(MAXBODY, Math.round(vc / maxLen * MAXBODY));
+    let ml = maxLeft();
+    let hpot = ml > 0 ? Math.round(left / ml * MAXPOT) : 0;
+    IBase.ModifyProp(hscroll, win, null, PROP_FREEHORIZ, hpot, 0, hbody, 0);
+}
+function insert(ch) { let ln = lines[cy]; lines[cy] = ln.slice(0, cx) + ch + ln.slice(cx); cx += ch.length; }
+function newline() { let ln = lines[cy]; let a = ln.slice(0, cx), b = ln.slice(cx); lines[cy] = a; lines.splice(cy + 1, 0, b); cy++; cx = 0; }
+function backspace() {
+    if (cx > 0) { let ln = lines[cy]; lines[cy] = ln.slice(0, cx - 1) + ln.slice(cx); cx--; }
+    else if (cy > 0) { let prev = lines[cy - 1]; cx = prev.length; lines[cy - 1] = prev + lines[cy]; lines.splice(cy, 1); cy--; }
+}
+function del() {
+    let ln = lines[cy];
+    if (cx < ln.length) lines[cy] = ln.slice(0, cx) + ln.slice(cx + 1);
+    else if (cy < lines.length - 1) { lines[cy] = ln + lines[cy + 1]; lines.splice(cy + 1, 1); }
+}
+function moveLeft() { if (cx > 0) cx--; else if (cy > 0) { cy--; cx = lines[cy].length; } }
+function moveRight() { if (cx < lines[cy].length) cx++; else if (cy < lines.length - 1) { cy++; cx = 0; } }
+function moveUp() { if (cy > 0) { cy--; clampCx(); } }
+function moveDown() { if (cy < lines.length - 1) { cy++; clampCx(); } }
+// Coloca el cursor en la posicion del raton (mx,my relativos a la ventana). El contenido
+// empieza en (1, TBH) dentro de la ventana; el texto se dibuja en (MX, MY) del contenido.
+// Fuente monoespaciada -> el ancho de columna se mide con un caracter (sin bucles).
+function placeCursorAt(mx, my) {
+    let row = Math.floor((my - TBH - MY) / ROWH);
+    cy = Math.max(0, Math.min(lines.length - 1, top + Math.max(0, row)));
+    let ctx = rp.BitMap.ctx;
+    // Topaz es monoespaciada: 8 px por caracter a cualquier tamano. El cursor debe usar ESE ancho
+    // (no el avance del monospace del navegador) para cuadrar con el texto que dibuja PrintIText.
+    let cw = (typeof window !== 'undefined' && window.Topaz) ? window.Topaz.charWidth(FONTH) : (ctx.font = FONTH + 'px monospace', ctx.measureText('0').width || 7);
+    cx = Math.max(0, Math.min(lines[cy].length, left + Math.round((mx - 1 - MX) / cw)));
+}
+
+// --- Guardar / Abrir / Nuevo (corren dentro del callback del requester) ---
+// Work: (DH1:) es la nube (cloud.device), ASINCRONA -> se usa la API de CloudDrive y se
+// actualiza la UI en el .then(). RAM:/DF0: son sincronas via DBase.
+function isWorkPath(name) { return /^(work|dh1):/i.test(String(name).trim()); }
+function workComps(name) { return String(name).trim().replace(/^(work|dh1):/i, '').split('/').filter(c => c.length); }
+function cloudReady() { let cd = window.CloudDrive; return !!(cd && cd.accessToken && cd.workFolderId != null); }
+
+function doSave(name) {
+    if (!name) return;
+    curName = name;
+    let text = lines.join('\n');
+    if (isWorkPath(name)) { saveToWork(name, text); return; }
+    let bytes = textToBytes(text);
+    let fh = DBase.Open(name, DBase.MODE_NEWFILE);
+    if (!fh) { IBase.EasyRequest("Notepad", "No se pudo escribir:\n" + name, ["Ok"], null); return; }
+    if (bytes.length) DBase.Write(fh, bytes, bytes.length);
+    DBase.Close(fh);
+    win.Title = 'Notepad - ' + name;
+}
+function saveToWork(name, text) {
+    if (!cloudReady()) { IBase.EasyRequest("Notepad", "Work: no esta disponible (no conectado).", ["Ok"], null); return; }
+    let cd = window.CloudDrive, comps = workComps(name);
+    if (!comps.length) { IBase.EasyRequest("Notepad", "Nombre de fichero invalido.", ["Ok"], null); return; }
+    let fname = comps[comps.length - 1], parentComps = comps.slice(0, -1);
+    win.Title = 'Notepad - guardando...';
+	
+    let getParent = parentComps.length ? cd.ShellResolve(parentComps, cd.workFolderId) : Promise.resolve({ id: cd.workFolderId });
+    getParent.then(parent => {
+        if (!parent) { IBase.EasyRequest("Notepad", "Carpeta no encontrada en Work:", ["Ok"], null); win.Title = 'Notepad'; return; }
+        return cd.ShellWriteFile(parent.id, fname, text).then(id => {
+            if (id) {
+                win.Title = 'Notepad - ' + name;
+                // Refresco RAPIDO: examina solo este fichero (no relee toda la carpeta).
+                if (typeof cd.RefreshCloudFile === 'function') cd.RefreshCloudFile(parent.id, fname);
+            } else { IBase.EasyRequest("Notepad", "Error al guardar en Work:", ["Ok"], null); win.Title = 'Notepad'; }
+        });
+    }).catch(() => { IBase.EasyRequest("Notepad", "Error de nube al guardar.", ["Ok"], null); win.Title = 'Notepad'; });
+}
+function doOpen(name) {
+    if (!name) return;
+    if (isWorkPath(name)) { openFromWork(name); return; }
+    let fh = DBase.Open(name, DBase.MODE_OLDFILE);
+    if (!fh) { IBase.EasyRequest("Notepad", "No se pudo abrir:\n" + name, ["Ok"], null); return; }
+    let buf = new Uint8Array(READ_MAX);
+    let n = DBase.Read(fh, buf, READ_MAX);
+    DBase.Close(fh);
+    if (n < 0) n = 0;
+    curName = name;
+    setText(bytesToText(buf, n), name);
+}
+function openFromWork(name) {
+    if (!cloudReady()) { IBase.EasyRequest("Notepad", "Work: no esta disponible (no conectado).", ["Ok"], null); return; }
+    let cd = window.CloudDrive, comps = workComps(name);
+    if (!comps.length) { IBase.EasyRequest("Notepad", "Nombre de fichero invalido.", ["Ok"], null); return; }
+    win.Title = 'Notepad - abriendo...';
+    cd.ShellResolve(comps, cd.workFolderId).then(file => {
+        if (!file || file.type !== 'file') { IBase.EasyRequest("Notepad", "No se encontro el fichero en Work:", ["Ok"], null); win.Title = 'Notepad'; return; }
+        return cd.ShellDownload(file.id).then(text => {
+            if (text == null) { IBase.EasyRequest("Notepad", "Error al leer de Work:", ["Ok"], null); win.Title = 'Notepad'; return; }
+            curName = name;
+            setText(String(text), name);
+        });
+    }).catch(() => { IBase.EasyRequest("Notepad", "Error de nube al abrir.", ["Ok"], null); win.Title = 'Notepad'; });
+}
+
+// Vuelca texto cargado al editor y redibuja (comun a RAM/DF0/Work).
+function setText(text, name) {
+    lines = text.split('\n');
+    if (lines.length === 0) lines = [""];
+    cx = 0; cy = 0; top = 0;
+    win.Title = 'Notepad - ' + name;
+    redraw();
+}
+function doNew() {
+    lines = [""]; cx = 0; cy = 0; top = 0;
+    win.Title = 'Notepad';
+    redraw();
+}
+
+// --- Dibujo (helper con bucle de lineas) ---
+function redraw() {
+    GBase.SetAPen(rp, WHITE);
+    GBase.RectFill(rp, 0, 0, (rp.BitMap.BytesPerRow * 8) - 1, rp.BitMap.Rows - 1);
+    let vr = visRows(), vc = visCols();
+    lines.slice(top, top + vr).forEach((ln, i) => {
+        let seg = ln.slice(left, left + vc + 1);   // solo la porcion visible (scroll horizontal)
+        IBase.PrintIText(rp, { IText: seg, FrontPen: BLACK, DrawMode: 0, LeftEdge: MX, TopEdge: MY + i * ROWH, ITextFont: { ta_YSize: FONTH } }, 0, 0);
+    });
+    let crow = cy - top;
+    if (crow >= 0 && crow < vr && cx >= left && cx <= left + vc) {
+        let cw = charW();
+        let px = MX + (cx - left) * cw, py = MY + crow * ROWH;
+        GBase.SetAPen(rp, BLACK);
+        GBase.RectFill(rp, px, py, px + 1, py + 7);   // caret de 8 px (alto del glifo Topaz), no ROWH
+    }
+    updateScroll();   // refleja top/left en los knobs de ambas barras
+}
+
+ensureVisible();
+redraw();
+
+// --- Bucle de eventos ---
+let done = false;
+while (!done) {
+    Exec.WaitPort(win.UserPort);
+    let msg, changed = false, caretMoved = false;
+    while ((msg = Exec.GetMsg(win.UserPort.ln_Name))) {
+        let cls = msg.Class;
+        if (cls === IBase.IDCMP_CLOSEWINDOW) {
+            done = true;
+        } else if (cls === IBase.IDCMP_MENUPICK) {
+            // Code = (menuNum<<11)|(itemNum<<5)|subNum. Solo hay un menu (Project=0).
+            let code = msg.Code;
+            let menuNum = (code >> 11) & 0x1F, itemNum = (code >> 5) & 0x3F;
+            if (menuNum === 0) {
+                if (itemNum === 0) doNew();                                  // New
+                else if (itemNum === 1) IBase.StringRequest("Open", "Abrir fichero:", curName, ["Open", "Cancel"], function (choice, text) { if (choice === 0 && text && text.trim()) doOpen(text.trim()); });
+                else if (itemNum === 2) IBase.StringRequest("Save", "Guardar como:", curName, ["Save", "Cancel"], function (choice, text) { if (choice === 0 && text && text.trim()) doSave(text.trim()); });
+                else if (itemNum === 4) done = true;                        // Close
+            }
+        } else if (cls === IBase.IDCMP_MOUSEBUTTONS) {
+            // Clic con el boton izquierdo en el contenido: situar el cursor bajo el puntero.
+            if (msg.Code === IBase.SELECTDOWN) { placeCursorAt(msg.MouseX, msg.MouseY); changed = true; caretMoved = true; }
+        } else if (cls === IBase.IDCMP_MOUSEMOVE || cls === IBase.IDCMP_GADGETUP) {
+            // Arrastre del knob de una barra: el sistema actualiza el Pot; lo convertimos a top/left.
+            if (msg.IAddress === vscroll) { top = potToTop(vscroll.SpecialInfo.VertPot); changed = true; }
+            else if (msg.IAddress === hscroll) { left = potToLeft(hscroll.SpecialInfo.HorizPot); changed = true; }
+        } else if (cls === IBase.IDCMP_NEWSIZE) {
+            // La ventana cambio de tamano: reajustar las barras al chrome actual (por si cambio la
+            // resolucion) y ambos scrolls, y redibujar.
+            applyChrome(); clampTop(); clampLeft(); changed = true;
+        } else if (cls === IBase.IDCMP_VANILLAKEY) {
+            let c = msg.Code;
+            if (c === 13) { newline(); changed = true; }
+            else if (c === 8) { backspace(); changed = true; }
+            else if (c === 127) { del(); changed = true; }
+            else if (c === 9) { insert('    '); changed = true; }      // Tab -> 4 espacios
+            // Imprimibles: ASCII (32..126) y Latin-1 alto (160..255: acentos, ñ, ¿, ¡, ü...).
+            // 127..159 son controles C1, se ignoran.
+            else if ((c >= 32 && c < 127) || (c >= 160 && c <= 255)) { insert(String.fromCharCode(c)); changed = true; }
+            if (changed) caretMoved = true;                            // editar mueve el cursor
+        } else if (cls === IBase.IDCMP_RAWKEY) {
+            let k = msg.ie_KeyStr;
+            if (k === 'ArrowLeft') moveLeft();
+            else if (k === 'ArrowRight') moveRight();
+            else if (k === 'ArrowUp') moveUp();
+            else if (k === 'ArrowDown') moveDown();
+            else if (k === 'Home') cx = 0;
+            else if (k === 'End') cx = lines[cy].length;
+            changed = true; caretMoved = true;
+        }
+        Exec.ReplyMsg(msg);
+    }
+    if (!done && changed) { if (caretMoved) ensureVisible(); redraw(); }
+}
+
+IBase.CloseWindow(win);
+Exec.CloseLibrary(IBase);
+Exec.CloseLibrary(GBase);
+Exec.CloseLibrary(DBase);

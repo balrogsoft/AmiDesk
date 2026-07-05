@@ -1,0 +1,74 @@
+// AmiDesk - Demo de pantalla propia (Fase D5: multipantalla)
+//
+// Abre una pantalla custom con OpenScreen y, DENTRO de ella, una ventana con OpenWindow
+// (NewWindow.Screen = la pantalla). Al cerrar la ventana (gadget de cierre, IDCMP_CLOSEWINDOW)
+// se cierran AMBAS: primero la ventana y despues la pantalla.
+//
+// Arrastra la barra de titulo de la pantalla hacia abajo (boton izquierdo) para revelar el
+// Workbench que queda detras; los gadgets de profundidad de la barra la mandan al frente/fondo.
+//
+// Fichero de app de codigo plano: se lanza con doble-clic o desde el Shell por su nombre
+// ('ScreenDemo' / 'RUN ScreenDemo'). El cuerpo se ejecuta como tarea de Exec.
+
+let Exec = window.Exec;
+
+let IntuitionBase = Exec.OpenLibrary('intuition.library', 0);
+let GfxBase = Exec.OpenLibrary('graphics.library', 0);
+
+// Pens de la paleta Workbench: 0=blue, 1=white, 2=black, 3=orange.
+const BLUE = 0, BLACK = 1, WHITE = 2;
+
+// 1) Abrir una pantalla propia con su PALETA (fondo verde-azulado, distinto del Workbench).
+//    Palette es la paleta indexada; aqui solo cambiamos el color 0 (fondo), heredando el resto
+//    (negro=1, blanco=2, naranja=3) del sistema.
+let myScreen = IntuitionBase.OpenScreen({
+    LeftEdge: 0, TopEdge: 0,
+    Depth: 2,
+    DefaultTitle: 'Demo Screen - arrastra esta barra hacia abajo',
+    Palette: { blue: '#1A6B5A' },
+    Type: 0   // CUSTOMSCREEN
+});
+if (!myScreen) return;
+
+// 2) Abrir una ventana DENTRO de esa pantalla (Screen = myScreen).
+let win = IntuitionBase.OpenWindow({
+    Title: 'Demo Window',
+    LeftEdge: 40, TopEdge: 30, Width: 320, Height: 130,
+    Flags: IntuitionBase.WINDOWCLOSE | IntuitionBase.WINDOWDRAG | IntuitionBase.WINDOWDEPTH,
+    IDCMPFlags: IntuitionBase.IDCMP_CLOSEWINDOW,
+    Screen: myScreen
+});
+if (!win) { IntuitionBase.CloseScreen(myScreen); return; }
+let rp = win.RPort;
+
+// 3) Dibujar el contenido de la ventana.
+GfxBase.SetAPen(rp, WHITE); GfxBase.RectFill(rp, 0, 0, win.Width - 1, win.Height - 1);
+let lines = [
+    'Esta ventana vive en su propia pantalla.',
+    '',
+    'Arrastra la barra superior hacia abajo',
+    'para ver el Workbench que hay detras.',
+    '',
+    'Al cerrar esta ventana se cerrara',
+    'tambien la pantalla.'
+];
+for (let i = 0; i < lines.length; i++) {
+    IntuitionBase.PrintIText(rp, { IText: lines[i], FrontPen: BLACK, DrawMode: 0, LeftEdge: 8, TopEdge: 6 + i * 12 }, 0, 0);
+}
+
+// 4) Bucle de eventos: esperar hasta que se cierre la ventana.
+let done = false;
+while (!done) {
+    Exec.WaitPort(win.UserPort);
+    let msg;
+    while ((msg = Exec.GetMsg(win.UserPort.ln_Name))) {
+        if (msg.Class === IntuitionBase.IDCMP_CLOSEWINDOW) done = true;
+        Exec.ReplyMsg(msg);
+    }
+}
+
+// 5) Cerrar ventana Y pantalla.
+IntuitionBase.CloseWindow(win);
+IntuitionBase.CloseScreen(myScreen);
+Exec.CloseLibrary(IntuitionBase);
+Exec.CloseLibrary(GfxBase);

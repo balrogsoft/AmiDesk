@@ -1,0 +1,61 @@
+
+    let Palette = window.Palette;
+    let Exec = window.Exec;
+	
+    let IntuitionBase = Exec.OpenLibrary('intuition.library', 0);
+    let GfxBase = Exec.OpenLibrary('graphics.library', 0);
+    
+    // Usamos explícitamente el campo Flags con la constante WINDOWCLOSE
+    let win = IntuitionBase.OpenWindow({ 
+        id: 'shapes', Title: 'Geometry & Flood', 
+        LeftEdge: 280, TopEdge: 80, Width: 250, Height: 200,
+        Flags: IntuitionBase.WINDOWCLOSE | IntuitionBase.WINDOWDRAG | IntuitionBase.WINDOWSIZING
+    });
+    
+    if (!win) return;
+    let rp = win.RPort;
+    
+    GfxBase.SetAPen(rp, Palette.white);
+    GfxBase.RectFill(rp, 0, 0, rp.BitMap.canvas.width - 1, rp.BitMap.canvas.height - 1);
+    
+    let colors = [Palette.blue, Palette.orange, Palette.black, Palette.white];
+    
+    let done = false;
+    while (!done) {
+        let msg;
+        if ((msg = Exec.GetMsg(win.UserPort.ln_Name))) {
+            if (msg.Class === IntuitionBase.IDCMP_CLOSEWINDOW) {
+                done = true;
+            }
+            Exec.ReplyMsg(msg);
+        }
+        
+        if (done) break;
+        
+        let cx = Math.floor(Math.random() * rp.BitMap.canvas.width);
+        let cy = Math.floor(Math.random() * rp.BitMap.canvas.height);
+        let r = Math.floor(Math.random() * 40) + 10;
+        
+        GfxBase.SetAPen(rp, colors[Math.floor(Math.random() * colors.length)]);
+        
+        let tipo = Math.floor(Math.random() * 4);
+        if (tipo === 0) {
+            GfxBase._AreaCircle(rp, cx, cy, r);
+        } else if (tipo === 1) {
+            GfxBase.DrawEllipse(rp, cx, cy, r, r/2);
+        } else if (tipo === 2) {
+            GfxBase.AreaMove(rp, cx, cy - r);
+            GfxBase.AreaDraw(rp, cx + r, cy + r);
+            GfxBase.AreaDraw(rp, cx - r, cy + r);
+            GfxBase.AreaEnd(rp);
+        } else {
+            GfxBase.DrawEllipse(rp, cx, cy, r, r);
+            GfxBase.SetAPen(rp, colors[Math.floor(Math.random() * colors.length)]);
+            GfxBase.Move(rp, cx, cy);
+            GfxBase.Flood(rp, cx, cy, 0); 
+        }
+    }
+    IntuitionBase.CloseWindow(win);
+
+    Exec.CloseLibrary(IntuitionBase);
+    Exec.CloseLibrary(GfxBase);

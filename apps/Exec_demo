@@ -1,0 +1,87 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// AmiDesk - App de demostracion: API de exec.library
+//
+//   OpenLibrary/CloseLibrary, OpenDevice/CloseDevice, SendIO/CheckIO/WaitIO, WaitPort.
+//
+//   Exec.AddTask("ExecDemo", window.TaskExecDemo, 50, 0);
+//
+// Abre una pequena ventana de log y va mostrando el resultado de cada llamada del APIntuitionBase.
+// ─────────────────────────────────────────────────────────────────────────────
+
+    let Exec = window.Exec;
+
+    // --- Abrir intuition.library (como en Amiga: OpenLibrary antes de usarla) ---
+    let IntuitionBase = Exec.OpenLibrary('intuition.library', 0);
+    let GraphicsBase = Exec.OpenLibrary('graphics.library', 0);
+
+    // Ventana de log
+    let win = IntuitionBase.OpenWindow({
+        Title: 'Exec Demo',
+        LeftEdge: 150, TopEdge: 80, Width: 320, Height: 168,
+        Flags: IntuitionBase.WINDOWCLOSE | IntuitionBase.WINDOWDRAG | IntuitionBase.WINDOWDEPTH,
+        IDCMPFlags: IntuitionBase.IDCMP_CLOSEWINDOW
+    });
+    if (!win) return;
+
+    let lines = [];
+    let log = function(s) {
+        lines.push(s);
+        if (lines.length > 13) lines.shift();
+        let rp = win.RPort;
+        GraphicsBase.SetAPen(rp, window.Palette.white);
+        GraphicsBase.RectFill(rp, 0, 0, (rp.BitMap.BytesPerRow * 8) - 1, rp.BitMap.Rows - 1);
+        for (let i = 0; i < lines.length; i++) {
+            IntuitionBase.PrintIText(rp, { IText: lines[i], FrontPen: 1, DrawMode: 0, LeftEdge: 6, TopEdge: 6 + i * 11 }, 0, 0);
+        }
+    };
+
+    log('OpenLibrary intuition: ' + (IntuitionBase ? 'OK' : 'FALLO'));
+    log('OpenLibrary graphics:  ' + (GfxBase ? 'OK' : 'FALLO'));
+
+    // --- Abrir cloud.device y lanzar una operacion asincrona real ---
+    // IORequest con puerto de respuesta (necesario para SendIO/WaitIO).
+    let _me = Exec.FindTask(null);
+    let replyPort = new MsgPort((_me ? _me.ln_Name : 'execdemo') + '_reply');
+    Exec.AddPort(replyPort);
+
+    let io = {
+        io_Command: CLOUD_SAVEPREFS,   // guardar configuracion en Work
+        io_Data: {},
+        io_Error: 0,
+        mn_ReplyPort: replyPort
+    };
+
+    let openErr = Exec.OpenDevice('cloud.device', 0, io, 0);
+    log('OpenDevice cloud: ' + (openErr === 0 ? 'OK' : 'err ' + openErr));
+
+    if (openErr === 0) {
+        // SendIO: arranca la E/S asincrona y devuelve enseguida (no bloquea).
+        Exec.SendIO(io);
+        log('SendIO enviado. CheckIO=' + (Exec.CheckIO(io) ? 'done' : 'pending'));
+
+        // WaitIO: bloquea (yield inyectado) hasta que la operacion termina.
+        let err = Exec.WaitIO(io);
+        log('WaitIO completado. io_Error=' + err);
+        log('CheckIO ahora=' + (Exec.CheckIO(io) ? 'done' : 'pending'));
+
+        Exec.CloseDevice(io);
+        log('CloseDevice OK');
+    }
+
+    log('--- Listo. Cierra la ventana. ---');
+
+    // --- Bucle de eventos: espera mensajes con WaitPort (bloqueante, yield inyectado) ---
+    let done = false;
+    while (!done) {
+        // WaitPort se duerme hasta que llegue un IDCMP; no malgasta CPU en espera activa.
+        Exec.WaitPort(win.UserPort);
+        let msg;
+        while ((msg = Exec.GetMsg(win.UserPort.ln_Name))) {
+            if (msg.Class === IntuitionBase.IDCMP_CLOSEWINDOW) done = true;
+            Exec.ReplyMsg(msg);
+        }
+    }
+
+    IntuitionBase.CloseWindow(win);
+    Exec.CloseLibrary(IntuitionBase);
+    Exec.CloseLibrary(GraphicsBase);

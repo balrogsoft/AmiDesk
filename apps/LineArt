@@ -1,0 +1,38 @@
+    let Palette = window.Palette;
+    let Exec = window.Exec;
+    let IntuitionBase = Exec.OpenLibrary('intuition.library', 0);
+    let GfxBase = Exec.OpenLibrary('graphics.library', 0);
+    
+    let win = IntuitionBase.OpenWindow({ 
+        id: 'lines', Title: 'LineArt Demo', 
+        LeftEdge: 40, TopEdge: 60, Width: 220, Height: 180,
+        Flags: Intuition.WINDOWCLOSE | Intuition.WINDOWDRAG | Intuition.WINDOWSIZING
+    });
+	
+    if (!win) return;
+    let rp = win.RPort;
+    
+    GfxBase.SetAPen(rp, Palette.white);
+    GfxBase.RectFill(rp, 0, 0, rp.BitMap.canvas.width - 1, rp.BitMap.canvas.height - 1);
+    
+    let colors = [Palette.blue, Palette.orange, Palette.black, Palette.white];
+    
+    let done = false;
+    while (!done) {
+        let msg;
+        if ((msg = Exec.GetMsg(win.UserPort.ln_Name))) {
+            if (msg.Class === Intuition.IDCMP_CLOSEWINDOW) {
+                done = true;
+            }
+            Exec.ReplyMsg(msg);
+        }
+        
+        let x = Math.floor(Math.random() * rp.BitMap.canvas.width);
+        let y = Math.floor(Math.random() * rp.BitMap.canvas.height);
+        GfxBase.SetAPen(rp, colors[Math.floor(Math.random() * colors.length)]);
+        GfxBase.Draw(rp, x, y);
+    }
+    
+    Intuition.CloseWindow(win);
+    Exec.CloseLibrary(GfxBase);
+    Exec.CloseLibrary(IntuitionBase);

@@ -1,0 +1,89 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// AmiDesk - App de demostracion: GADGETS + ALERTAS/BEEP + DIBUJO 
+//
+// Abre una ventana con: dos botones (BOOLGADGET), un deslizador (PROPGADGET) y un
+// campo de texto (STRGADGET). Demuestra AddGadget, IDCMP_GADGETUP/GADGETDOWN, ModifyProp,
+// ActivateGadget, DisplayBeep y DisplayAlert. El contenido se dibuja con DrawBorder/PrintIText.
+// ─────────────────────────────────────────────────────────────────────────────
+
+    let Exec = window.Exec;
+    let IntuitionBase = Exec.OpenLibrary('intuition.library', 0);
+    let GraphicsBase = Exec.OpenLibrary('graphics.library', 0);
+
+    // Gadgets de aplicacion (lista enlazada por NextGadget; se enlaza al abrir la ventana).
+    let gBeep  = { GadgetID: 1, LeftEdge: 16,  TopEdge: 38, Width: 80, Height: 18,
+                   GadgetType: GTYP_BOOLGADGET, Activation: GACT_RELVERIFY, Flags: 0,
+                   GadgetText: "Beep", NextGadget: null };
+    let gAlert = { GadgetID: 2, LeftEdge: 104, TopEdge: 38, Width: 80, Height: 18,
+                   GadgetType: GTYP_BOOLGADGET, Activation: GACT_RELVERIFY, Flags: 0,
+                   GadgetText: "Alert", NextGadget: null };
+    let gProp  = { GadgetID: 3, LeftEdge: 16,  TopEdge: 78, Width: 168, Height: 12,
+                   GadgetType: GTYP_PROPGADGET, Activation: GACT_RELVERIFY, Flags: 0,
+                   SpecialInfo: { Flags: PROP_FREEHORIZ, HorizPot: 0, HorizBody: 0x1000, VertPot: 0, VertBody: MAXBODY },
+                   NextGadget: null };
+    let gStr   = { GadgetID: 4, LeftEdge: 16,  TopEdge: 106, Width: 168, Height: 14,
+                   GadgetType: GTYP_STRGADGET, Activation: GACT_RELVERIFY, Flags: 0,
+                   SpecialInfo: { Buffer: "", BufferPos: 0, MaxChars: 24 }, NextGadget: null };
+
+    // Encadenar los gadgets y pasarlos a OpenWindow.
+    gBeep.NextGadget = gAlert; gAlert.NextGadget = gProp; gProp.NextGadget = gStr;
+
+    let win = IntuitionBase.OpenWindow({
+        Title: 'Gadget Demo',
+        LeftEdge: 180, TopEdge: 70, Width: 210, Height: 150,
+        Flags: IntuitionBase.WINDOWCLOSE | IntuitionBase.WINDOWDRAG | IntuitionBase.WINDOWDEPTH,
+        IDCMP: true,
+        FirstGadget: gBeep
+    });
+    if (!win) return;
+
+    // Pinta el contenido (titulo, marco y estado) en el RastPort de la ventana.
+    let redraw = function(statusLine) {
+        let rp = win.RPort;
+        GraphicsBase.SetAPen(rp, window.Palette.white);
+        GraphicsBase.RectFill(rp, 0, 0, (rp.BitMap.BytesPerRow * 8) - 1, rp.BitMap.Rows - 1);
+        // Marco interior con DrawBorder (vertices conectados).
+        let w = (rp.BitMap.BytesPerRow * 8), h = rp.BitMap.Rows;
+        let border = { LeftEdge: 0, TopEdge: 0, FrontPen: 1, Count: 5,
+                       XY: [2,2, w-3,2, w-3,h-3, 2,h-3, 2,2], NextBorder: null };
+        IntuitionBase.DrawBorder(rp, border, 0, 0);
+        // Textos con PrintIText (JAM1: solo tinta).
+        IntuitionBase.PrintIText(rp, { IText: "Pulsa los botones:", FrontPen: 1, DrawMode: 0, LeftEdge: 12, TopEdge: 8 }, 0, 0);
+        IntuitionBase.PrintIText(rp, { IText: "Slider:", FrontPen: 1, DrawMode: 0, LeftEdge: 12, TopEdge: 52 }, 0, 0);
+        IntuitionBase.PrintIText(rp, { IText: "Texto:", FrontPen: 1, DrawMode: 0, LeftEdge: 12, TopEdge: 80 }, 0, 0);
+        if (statusLine) IntuitionBase.PrintIText(rp, { IText: statusLine, FrontPen: 3, DrawMode: 0, LeftEdge: 12, TopEdge: 118 }, 0, 0);
+    };
+    redraw("Listo.");
+
+    let done = false;
+    while (!done) {
+        let msg;
+        while ((msg = Exec.GetMsg(win.UserPort.ln_Name))) {
+            if (msg.Class === IntuitionBase.IDCMP_CLOSEWINDOW) {
+                done = true;
+            } else if (msg.Class === IntuitionBase.IDCMP_GADGETUP) {
+                let g = msg.IAddress;
+                if (g === gBeep) { IntuitionBase.DisplayBeep(win.WScreen); redraw("Beep!"); }
+                else if (g === gAlert) {
+                    IntuitionBase.DisplayAlert(0x80000000, "Esto es una RECOVERY ALARM.", 0, function(r) {
+                        redraw(r ? "Alerta: boton IZQUIERDO" : "Alerta: boton DERECHO");
+                    });
+                } else if (g === gProp) {
+                    let pot = gProp.SpecialInfo.HorizPot;
+                    let pct = Math.round(pot / MAXPOT * 100);
+                    redraw("Slider = " + pct + "%");
+                } else if (g === gStr) {
+                    redraw("Texto = '" + (gStr.SpecialInfo.Buffer || "") + "'");
+                }
+            } else if (msg.Class === IntuitionBase.IDCMP_MOUSEMOVE) {
+                let pct = Math.round(gProp.SpecialInfo.HorizPot / MAXPOT * 100);
+                redraw("Slider = " + pct + "%");
+            }
+            Exec.ReplyMsg(msg);
+        }
+        if (done) break;
+    }
+	
+    IntuitionBase.CloseWindow(win);
+    Exec.CloseLibrary(IntuitionBase);
+    Exec.CloseLibrary(GraphicsBase);

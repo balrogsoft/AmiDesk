@@ -1,0 +1,73 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// AmiDesk - App de demostracion: VENTANAS/PANTALLAS + REQUESTERS
+//
+// Abre una ventana con cuatro botones que ejercitan las funciones de manipulacion de
+// ventanas (MoveWindow, SizeWindow, WindowToBack) y un requester de confirmacion
+// (AutoRequest). Muestra como un BOOLGADGET dispara acciones via IDCMP_GADGETUP.
+// ─────────────────────────────────────────────────────────────────────────────
+
+    let Exec = window.Exec;
+	
+    let IntuitionBase = Exec.OpenLibrary('intuition.library', 0);
+    let GfxBase = Exec.OpenLibrary('graphics.library', 0);
+
+    let bW = 84, bH = 18;
+    let gMove = { GadgetID: 1, LeftEdge: 12,  TopEdge: 28, Width: bW, Height: bH,
+                  GadgetType: GTYP_BOOLGADGET, Activation: GACT_RELVERIFY, Flags: 0, GadgetText: "Move +20", NextGadget: null };
+    let gSize = { GadgetID: 2, LeftEdge: 104, TopEdge: 28, Width: bW, Height: bH,
+                  GadgetType: GTYP_BOOLGADGET, Activation: GACT_RELVERIFY, Flags: 0, GadgetText: "Bigger", NextGadget: null };
+    let gBack = { GadgetID: 3, LeftEdge: 12,  TopEdge: 54, Width: bW, Height: bH,
+                  GadgetType: GTYP_BOOLGADGET, Activation: GACT_RELVERIFY, Flags: 0, GadgetText: "To Back", NextGadget: null };
+    let gQuit = { GadgetID: 4, LeftEdge: 104, TopEdge: 54, Width: bW, Height: bH,
+                  GadgetType: GTYP_BOOLGADGET, Activation: GACT_RELVERIFY, Flags: 0, GadgetText: "Quit", NextGadget: null };
+    gMove.NextGadget = gSize; gSize.NextGadget = gBack; gBack.NextGadget = gQuit;
+
+    let win = IntuitionBase.OpenWindow({
+        Title: 'Window & Requester Demo',
+        LeftEdge: 120, TopEdge: 90, Width: 210, Height: 110,
+        MinWidth: 200, MinHeight: 104, MaxWidth: 400, MaxHeight: 260,
+        Flags: IntuitionBase.WINDOWCLOSE | IntuitionBase.WINDOWDRAG | IntuitionBase.WINDOWDEPTH | IntuitionBase.WINDOWSIZING,
+        IDCMPFlags: IntuitionBase.IDCMP_CLOSEWINDOW | IntuitionBase.IDCMP_GADGETUP | IntuitionBase.IDCMP_NEWSIZE,
+        FirstGadget: gMove
+    });
+    if (!win) return;
+
+    let lastLine = "";
+    let redraw = function(line) {
+        if (line !== undefined) lastLine = line;
+        let rp = win.RPort;
+        GfxBase.SetAPen(rp, window.Palette.white);
+        GfxBase.RectFill(rp, 0, 0, (rp.BitMap.BytesPerRow * 8) - 1, rp.BitMap.Rows - 1);
+        IntuitionBase.PrintIText(rp, { IText: "Prueba las funciones de ventana:", FrontPen: 2, DrawMode: 0, LeftEdge: 10, TopEdge: 8 }, 0, 0);
+        if (lastLine) IntuitionBase.PrintIText(rp, { IText: lastLine, FrontPen: 3, DrawMode: 0, LeftEdge: 10, TopEdge: rp.BitMap.Rows - 14 }, 0, 0);
+    };
+    redraw("");
+
+    let done = false;
+    while (!done) {
+        let msg;
+        while ((msg = Exec.GetMsg(win.UserPort.ln_Name))) {
+            if (msg.Class === IntuitionBase.IDCMP_CLOSEWINDOW) {
+                done = true;
+            } else if (msg.Class === IntuitionBase.IDCMP_NEWSIZE) {
+                // La ventana cambio de tamano: repintar todo el fondo y el contenido.
+                redraw();
+            } else if (msg.Class === IntuitionBase.IDCMP_GADGETUP) {
+                let g = msg.IAddress;
+                if (g === gMove) { IntuitionBase.MoveWindow(win, 20, 10); redraw("MoveWindow(+20,+10)"); }
+                else if (g === gSize) { IntuitionBase.SizeWindow(win, 20, 16); redraw("SizeWindow(+20,+16)"); }
+                else if (g === gBack) { IntuitionBase.WindowToBack(win); }
+                else if (g === gQuit) {
+                    IntuitionBase.AutoRequest(win, "Cerrar esta ventana?", "Si", "No", 0, 0, 0, 0, function(r) {
+                        if (r) { window._winDemoQuit = true; }
+                    });
+                }
+            }
+            Exec.ReplyMsg(msg);
+        }
+        if (window._winDemoQuit) { done = true; window._winDemoQuit = false; }
+        if (done) break;
+    }
+    IntuitionBase.CloseWindow(win);
+    Exec.CloseLibrary(IntuitionBase);
+    Exec.CloseLibrary(GfxBase);

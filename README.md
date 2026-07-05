@@ -1,0 +1,1 @@
+Viewing, forking on GitHub, and the strictly personal and educational use of this software are permitted. Any redistribution, sale, commercial hosting, or use of this code on any platform that generates direct or indirect revenue is strictly prohibited without the author's prior written consent.

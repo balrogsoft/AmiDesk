@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>AmiDesk 1.0</title>
+	<link rel="canonical" href="https://www.amidesk.net/amidesk.html"/>
+    <style>
+        body { 
+            margin: 0; 
+            background-color: #111; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            min-height: 100vh;   
+            overflow: auto;      
+            color: #0F0; 
+            font-family: monospace; 
+            flex-direction: column;
+            padding: 0px 0;
+        }
+		
+        #amigaScreen { 
+            //border: 4px solid #000; 
+            
+            /* Soporte para todos los navegadores: escalado sin emborronar */
+            image-rendering: -moz-crisp-edges;
+            image-rendering: -webkit-optimize-contrast;
+            image-rendering: crisp-edges;
+            image-rendering: pixelated; 
+            cursor: none; 
+            
+            /* BORRAMOS TODO LO DEMÁS. El tamaño lo decidirá JavaScript */
+        }
+        
+        #console { 
+			display: none;
+            width: 1280px;       
+            max-width: 95vw;
+            height: 120px; 
+            overflow-y: auto; 
+            background: #000; 
+            border: 2px solid #333; 
+            padding: 10px; 
+            margin-top: 20px; 
+            font-size: 12px; 
+            line-height: 1.4;
+            flex-shrink: 0; 			
+        }
+        /* canvas { border: 4px solid #000; image-rendering: pixelated; cursor: none; transform: scale(1); } */
+        .log-os { color: #0F0; margin: 2px 0; }
+        .log-sys { color: #F88800; margin: 2px 0; }
+        .log-hw { color: #0FF; margin: 2px 0; }
+        .log-exec { color: #FF00FF; margin: 2px 0; }
+    </style>
+</head>
+<body>
+    <input type="file" id="adfInput" accept=".adf" style="display:none">
+	<input type="file" id="importInput" style="display:none">
+    <canvas id="amigaScreen" width="640" height="512"></canvas>
+    <div id="console"></div>
+
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script src="https://apis.google.com/js/api.js"></script>
+
+    <script src="utils.js"></script>
+    <script src="taskloader.js"></script>
+    <script src="exec.js"></script>
+    <script src="devices.js"></script>
+    <script src="icon.js"></script>
+    <script src="dos.js"></script>
+	<script src="cpu68k.js"></script>
+	<script src="hunkload.js"></script>
+	<script src="thunk68k.js"></script>
+	<script src="native.js"></script>
+	<script src="shell.js"></script>
+    <script src="ed.js"></script>
+    <script src="topaz.js"></script>
+    <script src="diskfont.js"></script>
+    <script src="graphics.js"></script>
+    <script src="graphics_lib.js"></script>
+    <script src="layers.js"></script>
+    <script src="intuition.js"></script>
+    <script src="boot.js"></script>
+	<script>
+	function _applyPixelPerfectScale() {
+		// Detectamos la escala real del monitor (ej: 1.25 para Windows al 125%, 2 para Retina Mac)
+		let dpr = window.devicePixelRatio || 1;
+		
+		// Forzamos un multiplicador ENTERO (2x = 1 píxel del Amiga serán exactamente 4 píxeles físicos cuadrados)
+		let perfectScale = 2; 
+		
+		// La resolucion LOGICA es 640x512 (independiente del framebuffer fisico). En HIRES el
+		// framebuffer es 640x256 y al darle altura logica 512 se estira x2 -> pixel 1x2.
+		const LW = 640, LH = 512;
+		
+		// Si la pantalla del usuario es muy pequeña para el escalado x2, bajamos a x1
+		if (window.innerWidth < (LW * perfectScale / dpr)) {
+			perfectScale = 1;
+		}
+		
+		// Contrarrestamos la escala del SO dividiendo el tamaño final por el dpr
+		canvas.style.width = ((LW * perfectScale) / dpr) + 'px';
+		canvas.style.height = ((LH * perfectScale) / dpr) + 'px';
+	}
+
+	// Lo aplicamos al iniciar y cada vez que el usuario redimensione el navegador
+	_applyPixelPerfectScale();
+	window.addEventListener('resize', _applyPixelPerfectScale);
+	</script>
+</body>
+</html>

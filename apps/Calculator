@@ -1,0 +1,133 @@
+    let Exec = window.Exec;
+
+    // Abrir librerias (como en Amiga: OpenLibrary antes de usarlas).
+    let IntuitionBase = Exec.OpenLibrary('intuition.library', 0);
+    let GfxBase = Exec.OpenLibrary('graphics.library', 0);
+
+    // --- Constantes de gadget ---
+    const BOOLGADGET = 0x0001;     // GTYP_BOOLGADGET
+    const RELVERIFY  = 0x0001;     // GACT_RELVERIFY -> emite GADGETUP al soltar dentro
+
+    // Pens de la paleta Workbench: 0=blue, 1=white, 2=black, 3=orange.
+    const BLUE = 0, BLACK = 1, WHITE = 2;
+    const TBH = 16;                // altura de la barra de titulo
+
+    // --- Definicion de la rejilla de botones (label, GadgetID) ---
+    // IDs: 0..9 = digitos; 100='/' 101='*' 102='-' 103='+'; 104='=' ; 105='C'.
+    let layout = [
+        ['7', 7], ['8', 8], ['9', 9], ['/', 100],
+        ['4', 4], ['5', 5], ['6', 6], ['*', 101],
+        ['1', 1], ['2', 2], ['3', 3], ['-', 102],
+        ['0', 0], ['C', 105], ['=', 104], ['+', 103]
+    ];
+
+    // Construir la lista enlazada de gadgets (FirstGadget -> NextGadget -> ...).
+    let gadgets = [];
+    for (let i = 0; i < layout.length; i++) {
+        let col = i % 4, row = (i / 4) | 0;
+        gadgets.push({
+            GadgetType: BOOLGADGET, GadgetID: layout[i][1], Activation: RELVERIFY, Flags: 0,
+            LeftEdge: 4 + col * 42, TopEdge: 48 + row * 25, Width: 40, Height: 22,
+            GadgetText: layout[i][0], NextGadget: null
+        });
+    }
+    for (let i = 0; i < gadgets.length - 1; i++) gadgets[i].NextGadget = gadgets[i + 1];
+
+    // Abrir la ventana con sus gadgets de aplicacion.
+    let win = IntuitionBase.OpenWindow({
+        Title: 'Calculator',
+        LeftEdge: 220, TopEdge: 60, Width: 176, Height: 152,
+        Flags: IntuitionBase.WINDOWCLOSE | IntuitionBase.WINDOWDRAG | IntuitionBase.WINDOWDEPTH,
+        IDCMPFlags: IntuitionBase.IDCMP_CLOSEWINDOW | IntuitionBase.IDCMP_GADGETUP,
+        FirstGadget: gadgets[0]
+    });
+    if (!win) return;
+    let rp = win.RPort;
+
+    // --- Estado de la calculadora ---
+    let display = '0';     // texto mostrado
+    let acc = null;        // acumulador
+    let pend = null;       // operador pendiente ('+','-','*','/')
+    let fresh = true;      // true: el siguiente digito empieza un numero nuevo
+
+    // Redibuja el display (caja con borde + numero alineado a la derecha).
+    let drawDisplay = function () {
+        GfxBase.SetAPen(rp, BLACK); GfxBase.RectFill(rp, 4, 4, 168, 26);     // borde
+        GfxBase.SetAPen(rp, WHITE); GfxBase.RectFill(rp, 5, 5, 167, 25);     // interior
+        let s = display.length > 19 ? display.slice(0, 19) : display;
+        let tx = 166 - s.length * 8; if (tx < 8) tx = 8;
+        IntuitionBase.PrintIText(rp, { IText: s, FrontPen: BLACK, DrawMode: 0, LeftEdge: tx, TopEdge: 9 }, 0, 0);
+    };
+
+    let compute = function (a, op, b) {
+        let r;
+        if (op === '+') r = a + b;
+        else if (op === '-') r = a - b;
+        else if (op === '*') r = a * b;
+        else if (op === '/') r = (b === 0) ? NaN : a / b;
+        else r = b;
+        return r;
+    };
+
+    let fmt = function (n) {
+        if (!isFinite(n)) return 'Error';
+        // Redondear ruido de coma flotante y recortar ceros.
+        let s = (Math.round(n * 1e8) / 1e8).toString();
+        return s;
+    };
+
+    let onDigit = function (d) {
+        if (fresh) { display = String(d); fresh = false; }
+        else if (display === '0') display = String(d);
+        else if (display.length < 19) display = display + String(d);
+    };
+
+    let onOp = function (op) {
+        let val = parseFloat(display);
+        if (pend !== null && !fresh) { acc = compute(acc, pend, val); display = fmt(acc); }
+        else acc = val;
+        pend = op; fresh = true;
+        if (display === 'Error') { acc = null; pend = null; }
+    };
+
+    let onEquals = function () {
+        if (pend === null) return;
+        let val = parseFloat(display);
+        let r = compute(acc, pend, val);
+        display = fmt(r);
+        acc = isFinite(r) ? r : null;
+        pend = null; fresh = true;
+    };
+
+    let onClear = function () { display = '0'; acc = null; pend = null; fresh = true; };
+
+    // Pinta el fondo de la ventana y el display inicial.
+    GfxBase.SetAPen(rp, BLUE); GfxBase.RectFill(rp, 0, 0, win.Width - 1, win.Height - 1);
+    drawDisplay();
+
+    // --- Bucle de eventos: WaitPort se duerme hasta el siguiente IDCMP (yield inyectado) ---
+    let done = false;
+    while (!done) {
+        Exec.WaitPort(win.UserPort);
+        let msg;
+        while ((msg = Exec.GetMsg(win.UserPort.ln_Name))) {
+            let cls = msg.Class, code = msg.Code;
+            if (cls === IntuitionBase.IDCMP_CLOSEWINDOW) {
+                done = true;
+            } else if (cls === IntuitionBase.IDCMP_GADGETUP) {
+                if (code >= 0 && code <= 9) onDigit(code);
+                else if (code === 100) onOp('/');
+                else if (code === 101) onOp('*');
+                else if (code === 102) onOp('-');
+                else if (code === 103) onOp('+');
+                else if (code === 104) onEquals();
+                else if (code === 105) onClear();
+                drawDisplay();
+            }
+            Exec.ReplyMsg(msg);
+        }
+    }
+
+    IntuitionBase.CloseWindow(win);
+    Exec.CloseLibrary(IntuitionBase);
+    Exec.CloseLibrary(GfxBase);
